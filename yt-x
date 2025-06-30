@@ -550,12 +550,33 @@ byebye() {
   exit "${1:-0}"
 }
 prompt() {
+  HISTORY=$(tail -n 10 "$CLI_CACHE_DIR/search_history.txt" | grep -v '^\s*$' | tac | nl -w2 -s'. ')
+  HISTORY_TEXT="\nSearch history:\n$HISTORY\n-----------------------------\n(Enter !<n> for selecting from history. Example: !1)\n "
   if [ "$PREFERRED_SELECTOR" = "rofi" ]; then
-    rofi -dmenu -p "$1: "
+    if [ "$PROMPT_CONTEXT" = "Search" ] && [ "$SEARCH_HISTORY" = "true" ] && [ -n "$HISTORY" ]; then
+      rofi -dmenu \
+        -p "$1" \
+        -mesg "$(printf "\nSearch history:\n%s\n(Enter !&lt;n&gt; for selecting from history. Example: !1)\n" "$HISTORY")" \
+        <<< "" 
+      PROMPT_CONTEXT=""
+    else
+      rofi -dmenu -p "$1: "
+    fi
   elif command -v "gum" >/dev/null 2>&1; then
-    gum input --header "$CLI_HEADER" --prompt "$1: " --value "$2"
+    if [ "$PROMPT_CONTEXT" = "Search" ] && [ "$SEARCH_HISTORY" = "true" ] && [ -n "$HISTORY" ]; then
+      #Combine the YT-X header with the search history
+      HEADER_WITH_HISTORY=$(echo -e "$CLI_HEADER\n$HISTORY_TEXT")
+      gum input --header "$HEADER_WITH_HISTORY" --prompt "$1: " --value "$2"
+      PROMPT_CONTEXT=""
+    else
+      gum input --header "$CLI_HEADER" --prompt "$1: " --value "$2"
+    fi
   else
     echo "$CLI_HEADER" >/dev/stderr
+    if [ "$PROMPT_CONTEXT" = "Search" ] && [ "$SEARCH_HISTORY" = "true" ] && [ -n "$HISTORY" ]; then
+      echo -e "$HISTORY_TEXT" >/dev/stderr
+      PROMPT_CONTEXT=""
+    fi
     printf "%s: " "$1" >/dev/stderr
     read -r VAL
     echo "$VAL"
@@ -1377,8 +1398,19 @@ ${RED}󰈆${RESET}  Exit" | launcher "Select Action" | sed 's/.*  //g')"
     ;;
   Search)
     clear
+    PROMPT_CONTEXT="Search"
     if [ -z "$CMD_SEARCH_TERMS" ]; then
-           search_term="$(prompt "Enter term to search for")"
+         search_term="$(prompt "Enter term to search for")"
+        if [[ "$search_term" =~ ^![0-9] ]]; then
+          index="${search_term:1}"  # remove the leading "!"
+          history_item=$(tail -n 10 "$CLI_CACHE_DIR/search_history.txt" | tac | sed -n "${index}p")
+          if [[ -n "$history_item" ]]; then
+            echo "Using history item #$index: $history_item"
+            search_term="$history_item"
+          else
+            echo "No such history item: $index"
+          fi
+        fi
       # Exit if user presses ESC or leaves search empty in rofi
       if [ "$PREFERRED_SELECTOR" = "rofi" ] && [ -z "$search_term" ]; then
         echo "Search canceled. No search term provided."
@@ -1388,9 +1420,14 @@ ${RED}󰈆${RESET}  Exit" | launcher "Select Action" | sed 's/.*  //g')"
       search_term="$CMD_SEARCH_TERMS"
       unset CMD_SEARCH_TERMS
     fi
-    [ "$SEARCH_HISTORY" = "true" ] && [ -s "$CLI_CACHE_DIR/search_history.txt" ] && history=$(grep --invert-match "^$search_term\$" "$CLI_CACHE_DIR/search_history.txt")
-    [ "$SEARCH_HISTORY" = "true" ] && [ -s "$CLI_CACHE_DIR/search_history.txt" ] && echo "$history" >$CLI_CACHE_DIR/search_history.txt
-    [ "$SEARCH_HISTORY" = "true" ] && echo "$search_term" >>"$CLI_CACHE_DIR/search_history.txt"
+
+    if [ "$SEARCH_HISTORY" = "true" ] && [ -s "$CLI_CACHE_DIR/search_history.txt" ]; then
+      history=$(grep --invert-match "^$search_term\$" "$CLI_CACHE_DIR/search_history.txt")
+      echo "$history" > "$CLI_CACHE_DIR/search_history.txt"
+    fi
+
+    [ "$SEARCH_HISTORY" = "true" ] && echo "$search_term" >> "$CLI_CACHE_DIR/search_history.txt"
+
     search_term=$(echo "$search_term" | jq -Rr '@uri')
     url="https://www.youtube.com/results?search_query=$search_term&sp=EgIQAQ%253D%253D"
     search_results=$(run_yt_dlp "$url")
@@ -1474,252 +1511,252 @@ ${RED}󰈆${RESET}  Exit" | launcher "Select Action" | sed 's/.*  //g')"
   Miscellaneous)
     while true; do
       action="$(printf "\
-${CYAN}󰵀${RESET}  Explore Channels
-${CYAN}󰐑${RESET}  Explore Playlists
-${CYAN}󱘢${RESET}  Search History
-${CYAN}󰆺${RESET}  New Custom Command
-${CYAN}󰡦${RESET}  Custom Commands
-${CYAN}${RESET}  Edit Search History
-${CYAN}󰤀${RESET}  Edit Custom Playlists
-${CYAN}󱄢${RESET}  Edit MPV Config
-${CYAN}󰮆${RESET}  Edit yt-dlp Config
-${CYAN}󱘫${RESET}  Edit Custom Commands
-${CYAN}󰓦${RESET}  Sync YouTube Subscriptions
-${RED}󰆴${RESET}  Clear Search History
-${RED}${RESET}  Back
-${RED}󰈆${RESET}  Exit
-" | launcher "Select Action" | sed 's/.*  //g')"
-      case "$action" in
-      Explore\ Channels)
-        unset search_term
-        while true; do
-          clear
-          [ -z "$search_term" ] && search_term=$(prompt "What channel would you like to explore") && url="https://www.youtube.com/results?search_query=$search_term&sp=EgIQAg%253D%253D" && channels_data=$(
-            if command -v "gum" >/dev/null 2>&1; then
-              gum spin --show-output -- yt-dlp "$url" -J --flat-playlist --extractor-args youtubetab:approximate_date $PREFERRED_BROWSER --playlist-start 1 --playlist-end $NO_OF_SEARCH_RESULTS
-            else
-              echo "Loading..." >/dev/stderr
-              yt-dlp "$url" -J --flat-playlist --extractor-args youtubetab:approximate_date $PREFERRED_BROWSER --playlist-start 1 --playlist-end $NO_OF_SEARCH_RESULTS
-            fi
-          ) && download_preview_images "$channels_data" "https:"
-          clear
-          channels=$(echo "$channels_data" | jq '.entries[].channel' -r)
-          export channels_data SHELL
-          channel_name=$(printf "%s\nBack\nExit" "$channels" | launcher_with_preview "Select Channel" "$PREVIEW_SCRIPT_FOR_CHANNELS_EXPLORER")
-          channel_name="$(echo "$channel_name" | sed 's/"/\\"/g;s/ *$//g' | tr -d "\n")"
-          [ "$channel_name" = "Exit" ] && byebye
-          [ "$channel_name" = "Back" ] || [ "$channel_name" = "" ] && break
-          channel="$(echo "$channels_data" | jq ".entries|map(select(.channel == \"$channel_name\"))|.[0]")"
-          channels_explorer
-        done
-        unset channels_data
-        ;;
-      Explore\ Playlists)
-        clear
-        search_term=$(prompt "What playlist would you like to explore")
-        url="https://www.youtube.com/results?search_query=$search_term&sp=EgIQAw%253D%253D"
-        PLAYLISTS_EXTRA_ARGS="--playlist-start 1 --playlist-end $NO_OF_SEARCH_RESULTS"
-        playlists_explorer
-        unset PLAYLISTS_EXTRA_ARGS
-        ;;
-      Search\ History)
-        clear
-        while true; do
-          ! [ -s "$CLI_CACHE_DIR/search_history.txt" ] && echo "No search history or disabed" && sleep "$NOTIFICATION_DURATION" && main
-          search_term="$(printf "$(tac "$CLI_CACHE_DIR/search_history.txt")\nBack" | launcher "Search for" | jq -Rr '@uri')"
-          [ "$search_term" = "Back" ] || [ "$search_term" = "" ] && break
-          url="https://www.youtube.com/results?search_query=$search_term&sp=EgIQAQ%253D%253D"
-          search_results=$(run_yt_dlp "$url")
-          playlist_explorer
-        done
-        ;;
-      New\ Custom\ Command)
-        clear
-        custom_yt_dlp_cmd=$(prompt "Enter the custom yt-dlp command" "yt-dlp -J --flat-playlist --extractor-args youtubetab:approximate_date $PREFERRED_BROWSER https://youtube.com")
-        custom_cmds="[]"
-        [ -s "$F_CUSTOM_CMDS" ] && custom_cmds=$(cat "$F_CUSTOM_CMDS")
-        custom_cmd_name=$(prompt "Enter the name of the new custom command")
-        custom_cmd="
-          {
-            \"name\": \"$custom_cmd_name\",
-            \"cmd\": \"$custom_yt_dlp_cmd\"
-          }
-        "
-        echo "$custom_cmds" | jq ".+=[$custom_cmd]" >"$F_CUSTOM_CMDS" && send_notification "successfully added to custom cmds" || send_notification "Failed to add to custom cmds"
+        ${CYAN}󰵀${RESET}  Explore Channels
+              ${CYAN}󰐑${RESET}  Explore Playlists
+              ${CYAN}󱘢${RESET}  Search History
+              ${CYAN}󰆺${RESET}  New Custom Command
+              ${CYAN}󰡦${RESET}  Custom Commands
+              ${CYAN}${RESET}  Edit Search History
+              ${CYAN}󰤀${RESET}  Edit Custom Playlists
+              ${CYAN}󱄢${RESET}  Edit MPV Config
+              ${CYAN}󰮆${RESET}  Edit yt-dlp Config
+              ${CYAN}󱘫${RESET}  Edit Custom Commands
+              ${CYAN}󰓦${RESET}  Sync YouTube Subscriptions
+              ${RED}󰆴${RESET}  Clear Search History
+              ${RED}${RESET}  Back
+              ${RED}󰈆${RESET}  Exit
+              " | launcher "Select Action" | sed 's/.*  //g')"
+              case "$action" in
+                Explore\ Channels)
+                  unset search_term
+                  while true; do
+                    clear
+                    [ -z "$search_term" ] && search_term=$(prompt "What channel would you like to explore") && url="https://www.youtube.com/results?search_query=$search_term&sp=EgIQAg%253D%253D" && channels_data=$(
+                    if command -v "gum" >/dev/null 2>&1; then
+                      gum spin --show-output -- yt-dlp "$url" -J --flat-playlist --extractor-args youtubetab:approximate_date $PREFERRED_BROWSER --playlist-start 1 --playlist-end $NO_OF_SEARCH_RESULTS
+                    else
+                      echo "Loading..." >/dev/stderr
+                      yt-dlp "$url" -J --flat-playlist --extractor-args youtubetab:approximate_date $PREFERRED_BROWSER --playlist-start 1 --playlist-end $NO_OF_SEARCH_RESULTS
+                    fi
+                    ) && download_preview_images "$channels_data" "https:"
+                    clear
+                    channels=$(echo "$channels_data" | jq '.entries[].channel' -r)
+                    export channels_data SHELL
+                    channel_name=$(printf "%s\nBack\nExit" "$channels" | launcher_with_preview "Select Channel" "$PREVIEW_SCRIPT_FOR_CHANNELS_EXPLORER")
+                    channel_name="$(echo "$channel_name" | sed 's/"/\\"/g;s/ *$//g' | tr -d "\n")"
+                    [ "$channel_name" = "Exit" ] && byebye
+                    [ "$channel_name" = "Back" ] || [ "$channel_name" = "" ] && break
+                    channel="$(echo "$channels_data" | jq ".entries|map(select(.channel == \"$channel_name\"))|.[0]")"
+                    channels_explorer
+                  done
+                  unset channels_data
+                  ;;
+                Explore\ Playlists)
+                  clear
+                  search_term=$(prompt "What playlist would you like to explore")
+                  url="https://www.youtube.com/results?search_query=$search_term&sp=EgIQAw%253D%253D"
+                  PLAYLISTS_EXTRA_ARGS="--playlist-start 1 --playlist-end $NO_OF_SEARCH_RESULTS"
+                  playlists_explorer
+                  unset PLAYLISTS_EXTRA_ARGS
+                  ;;
+                Search\ History)
+                  clear
+                  while true; do
+                    ! [ -s "$CLI_CACHE_DIR/search_history.txt" ] && echo "No search history or disabed" && sleep "$NOTIFICATION_DURATION" && main
+                    search_term="$(printf "$(tac "$CLI_CACHE_DIR/search_history.txt")\nBack" | launcher "Search for" | jq -Rr '@uri')"
+                    [ "$search_term" = "Back" ] || [ "$search_term" = "" ] && break
+                    url="https://www.youtube.com/results?search_query=$search_term&sp=EgIQAQ%253D%253D"
+                    search_results=$(run_yt_dlp "$url")
+                    playlist_explorer
+                  done
+                  ;;
+                New\ Custom\ Command)
+                  clear
+                  custom_yt_dlp_cmd=$(prompt "Enter the custom yt-dlp command" "yt-dlp -J --flat-playlist --extractor-args youtubetab:approximate_date $PREFERRED_BROWSER https://youtube.com")
+                  custom_cmds="[]"
+                  [ -s "$F_CUSTOM_CMDS" ] && custom_cmds=$(cat "$F_CUSTOM_CMDS")
+                  custom_cmd_name=$(prompt "Enter the name of the new custom command")
+                  custom_cmd="
+                  {
+                    \"name\": \"$custom_cmd_name\",
+                    \"cmd\": \"$custom_yt_dlp_cmd\"
+                  }
+                  "
+                  echo "$custom_cmds" | jq ".+=[$custom_cmd]" >"$F_CUSTOM_CMDS" && send_notification "successfully added to custom cmds" || send_notification "Failed to add to custom cmds"
 
-        echo Running new custom command...
-        search_results=$(
-          if command -v "gum" >/dev/null 2>&1; then
-            gum spin --show-output --show-error -- $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
-          else
-            echo "Loading..." >/dev/stderr
-            $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
-          fi
-        )
+                  echo Running new custom command...
+                  search_results=$(
+                  if command -v "gum" >/dev/null 2>&1; then
+                    gum spin --show-output --show-error -- $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
+                  else
+                    echo "Loading..." >/dev/stderr
+                    $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
+                  fi
+                )
 
-        playlist_explorer
-        ;;
-      Custom\ Commands)
-        ! [ -s "$F_CUSTOM_CMDS" ] && send_notification "You dont have any custom cmds create them here <$F_CUSTOM_CMDS>"
-        while true; do
-          custom_cmd_name=$(printf "%s\nBack" "$(jq -r '.[].name' "$F_CUSTOM_CMDS")" | launcher "Select Custom Data Loader Command To Run")
-          [ "$custom_cmd_name" = "Back" ] || [ "$custom_cmd_name" = "" ] && break
-          custom_yt_dlp_cmd=$(jq -r ". | map(select(.name == \"$custom_cmd_name\" )) | .[0].cmd" "$F_CUSTOM_CMDS")
-          echo Running custom command...
-          search_results=$(
-            if command -v "gum" >/dev/null 2>&1; then
-              gum spin --show-output --show-error -- $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
-            else
-              echo "Loading..." >/dev/stderr
-              $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
-            fi
-          )
-          playlist_explorer
+                playlist_explorer
+                ;;
+              Custom\ Commands)
+                ! [ -s "$F_CUSTOM_CMDS" ] && send_notification "You dont have any custom cmds create them here <$F_CUSTOM_CMDS>"
+                while true; do
+                  custom_cmd_name=$(printf "%s\nBack" "$(jq -r '.[].name' "$F_CUSTOM_CMDS")" | launcher "Select Custom Data Loader Command To Run")
+                  [ "$custom_cmd_name" = "Back" ] || [ "$custom_cmd_name" = "" ] && break
+                  custom_yt_dlp_cmd=$(jq -r ". | map(select(.name == \"$custom_cmd_name\" )) | .[0].cmd" "$F_CUSTOM_CMDS")
+                  echo Running custom command...
+                  search_results=$(
+                  if command -v "gum" >/dev/null 2>&1; then
+                    gum spin --show-output --show-error -- $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
+                  else
+                    echo "Loading..." >/dev/stderr
+                    $custom_yt_dlp_cmd || send_notification "Failed to fetch data : ("
+                  fi
+                )
+                playlist_explorer
+              done
+              ;;
+            Edit\ Search\ History)
+              if command -v "$EDITOR" >/dev/null 2>&1; then
+                $EDITOR "$CLI_CACHE_DIR/search_history.txt"
+              elif command -v "open" >/dev/null 2>&1; then
+                open "$CLI_CACHE_DIR/search_history.txt"
+              elif command -v "xdg-open" >/dev/null 2>&1; then
+                xdg-open "$CLI_CACHE_DIR/search_history.txt"
+              else
+                send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
+              fi
+              ;;
+            Edit\ Custom\ Playlists)
+              if command -v "$EDITOR" >/dev/null 2>&1; then
+                $EDITOR "$CLI_CONFIG_DIR/custom_playlists.json"
+              elif command -v "open" >/dev/null 2>&1; then
+                open "$CLI_CONFIG_DIR/custom_playlists.json"
+              elif command -v "xdg-open" >/dev/null 2>&1; then
+                xdg-open "$CLI_CONFIG_DIR/custom_playlists.json"
+              else
+                send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
+              fi
+              ;;
+            Edit\ Custom\ Commands)
+              if command -v "$EDITOR" >/dev/null 2>&1; then
+                $EDITOR "$F_CUSTOM_CMDS"
+              elif command -v "open" >/dev/null 2>&1; then
+                open "$F_CUSTOM_CMDS"
+              elif command -v "xdg-open" >/dev/null 2>&1; then
+                xdg-open "$F_CUSTOM_CMDS"
+              else
+                send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
+              fi
+              ;;
+
+            Edit\ MPV\ Config)
+              if command -v "$EDITOR" >/dev/null 2>&1; then
+                $EDITOR "${XDG_CONFIG_HOME:-"$HOME"/.config}/mpv/mpv.conf"
+              elif command -v "open" >/dev/null 2>&1; then
+                open "${XDG_CONFIG_HOME:-"$HOME"/.config}/mpv/mpv.conf"
+              elif command -v "xdg-open" >/dev/null 2>&1; then
+                xdg-open "${XDG_CONFIG_HOME:-"$HOME"/.config}/mpv/mpv.conf"
+              else
+                send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
+              fi
+              ;;
+            "Edit yt-dlp Config")
+              if command -v "$EDITOR" >/dev/null 2>&1; then
+                $EDITOR "${XDG_CONFIG_HOME:-"$HOME"/.config}/yt-dlp/config"
+              elif command -v "open" >/dev/null 2>&1; then
+                open "${XDG_CONFIG_HOME:-"$HOME"/.config}/yt-dlp/config"
+              elif command -v "xdg-open" >/dev/null 2>&1; then
+                xdg-open "${XDG_CONFIG_HOME:-"$HOME"/.config}/yt-dlp/config"
+              else
+                send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
+              fi
+              ;;
+            Clear\ Search\ History)
+              confirm "Are you sure you want to clear your search history ($CLI_CACHE_DIR/search_history.txt)" && rm "$CLI_CACHE_DIR/search_history.txt"
+              ;;
+            Sync\ YouTube\ Subscriptions)
+              if confirm "This will erase your local subs, are you sure you wish to proceed"; then
+                echo "Syncing subscriptions..."
+                [ -n "$PREFERRED_BROWSER" ] && channels_data=$(yt-dlp "https://www.youtube.com/feed/channels" --flat-playlist $PREFERRED_BROWSER -J) || send_notification "Failed to fetch subscriptions (please set preferred browser in config"
+                download_preview_images "$channels_data" "https:"
+                [ -n "$channels_data" ] && ! [ "$channels_data" = "null" ] && echo "$channels_data" >"$CLI_CONFIG_DIR/subscriptions.json" && send_notification "successfully imported yt subs" || send_notification "Failed to fetch subscriptions"
+              else
+                send_notification "Sync cancelled"
+              fi
+              ;;
+            Back|"")
+              break
+              ;;
+            Exit)
+              byebye
+              ;;
+            *)
+              echo invalid action
+              sleep "$NOTIFICATION_DURATION"
+              ;;
+          esac
         done
         ;;
-      Edit\ Search\ History)
-        if command -v "$EDITOR" >/dev/null 2>&1; then
-          $EDITOR "$CLI_CACHE_DIR/search_history.txt"
-        elif command -v "open" >/dev/null 2>&1; then
-          open "$CLI_CACHE_DIR/search_history.txt"
-        elif command -v "xdg-open" >/dev/null 2>&1; then
-          xdg-open "$CLI_CACHE_DIR/search_history.txt"
-        else
-          send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
-        fi
-        ;;
-      Edit\ Custom\ Playlists)
-        if command -v "$EDITOR" >/dev/null 2>&1; then
-          $EDITOR "$CLI_CONFIG_DIR/custom_playlists.json"
-        elif command -v "open" >/dev/null 2>&1; then
-          open "$CLI_CONFIG_DIR/custom_playlists.json"
-        elif command -v "xdg-open" >/dev/null 2>&1; then
-          xdg-open "$CLI_CONFIG_DIR/custom_playlists.json"
-        else
-          send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
-        fi
-        ;;
-      Edit\ Custom\ Commands)
-        if command -v "$EDITOR" >/dev/null 2>&1; then
-          $EDITOR "$F_CUSTOM_CMDS"
-        elif command -v "open" >/dev/null 2>&1; then
-          open "$F_CUSTOM_CMDS"
-        elif command -v "xdg-open" >/dev/null 2>&1; then
-          xdg-open "$F_CUSTOM_CMDS"
-        else
-          send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
-        fi
-        ;;
-
-      Edit\ MPV\ Config)
-        if command -v "$EDITOR" >/dev/null 2>&1; then
-          $EDITOR "${XDG_CONFIG_HOME:-"$HOME"/.config}/mpv/mpv.conf"
-        elif command -v "open" >/dev/null 2>&1; then
-          open "${XDG_CONFIG_HOME:-"$HOME"/.config}/mpv/mpv.conf"
-        elif command -v "xdg-open" >/dev/null 2>&1; then
-          xdg-open "${XDG_CONFIG_HOME:-"$HOME"/.config}/mpv/mpv.conf"
-        else
-          send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
-        fi
-        ;;
-      "Edit yt-dlp Config")
-        if command -v "$EDITOR" >/dev/null 2>&1; then
-          $EDITOR "${XDG_CONFIG_HOME:-"$HOME"/.config}/yt-dlp/config"
-        elif command -v "open" >/dev/null 2>&1; then
-          open "${XDG_CONFIG_HOME:-"$HOME"/.config}/yt-dlp/config"
-        elif command -v "xdg-open" >/dev/null 2>&1; then
-          xdg-open "${XDG_CONFIG_HOME:-"$HOME"/.config}/yt-dlp/config"
-        else
-          send_notification "Could not find editor env ($EDITOR) or xdg-open or open"
-        fi
-        ;;
-      Clear\ Search\ History)
-        confirm "Are you sure you want to clear your search history ($CLI_CACHE_DIR/search_history.txt)" && rm "$CLI_CACHE_DIR/search_history.txt"
-        ;;
-      Sync\ YouTube\ Subscriptions)
-        if confirm "This will erase your local subs, are you sure you wish to proceed"; then
-          echo "Syncing subscriptions..."
-          [ -n "$PREFERRED_BROWSER" ] && channels_data=$(yt-dlp "https://www.youtube.com/feed/channels" --flat-playlist $PREFERRED_BROWSER -J) || send_notification "Failed to fetch subscriptions (please set preferred browser in config"
-          download_preview_images "$channels_data" "https:"
-          [ -n "$channels_data" ] && ! [ "$channels_data" = "null" ] && echo "$channels_data" >"$CLI_CONFIG_DIR/subscriptions.json" && send_notification "successfully imported yt subs" || send_notification "Failed to fetch subscriptions"
-        else
-          send_notification "Sync cancelled"
-        fi
-        ;;
-      Back|"")
-        break
-        ;;
-      Exit)
+      Exit|"")
         byebye
         ;;
       *)
         echo invalid action
         sleep "$NOTIFICATION_DURATION"
         ;;
-      esac
-    done
-    ;;
-  Exit|"")
-    byebye
-    ;;
-  *)
-    echo invalid action
-    sleep "$NOTIFICATION_DURATION"
-    ;;
-  esac
-  main
-}
+    esac
+    main
+  }
 
-usage() {
-  printf "\
-A script written to browse youtube from the terminal
+  usage() {
+    printf "\
+      A script written to browse youtube from the terminal
 
-Usage: %s [arguments] [options] 
+    Usage: %s [arguments] [options] 
 
-Commandline options override the config
+    Commandline options override the config
 
-Options:
-  -S, --search [Search Terms]
+    Options:
+    -S, --search [Search Terms]
     search for a video
-  -e, --edit-config
+    -e, --edit-config
     edit $CLI_NAME config file
-  --rofi-theme <path>
+    --rofi-theme <path>
     set the path to your rofi config file
-  --disown-streaming-process
+    --disown-streaming-process
     disown the streaming process so you can contine streaming even if you close $CLI_NAME
-  --no-disown-streaming-process
+    --no-disown-streaming-process
     don't disown the streaming process
-  --disown-downloading-process
+    --disown-downloading-process
     disown the downloading process so you can contine streaming even if you close $CLI_NAME
-  --no-disown-downloading-process
+    --no-disown-downloading-process
     don't disown the downloading process
-  -s <selector>,--preferred-selector <selector> [fzf/rofi]
+    -s <selector>,--preferred-selector <selector> [fzf/rofi]
     set the preferred selector for $CLI_NAME to use
-  -p <player>,--player <player> [mpv/vlc]
+    -p <player>,--player <player> [mpv/vlc]
     set the video player for $CLI_NAME to use
-  -x <extension>,--extension <extension> [name of extension file at $CLI_EXTENSION_DIR]
+    -x <extension>,--extension <extension> [name of extension file at $CLI_EXTENSION_DIR]
     set the extension for $CLI_NAME to use
-  --preview
+    --preview
     enable the preview window
-  --no-preview
+    --no-preview
     disable the preview window
-  -E, --generate-desktop-entry
+    -E, --generate-desktop-entry
     print the desktop entry and exit
-  -h, --help
+    -h, --help
     Show this help message and exit
-  -v, --version
+    -v, --version
     print the $CLI_NAME version and exit
 
-arguments:
-  completions
+    arguments:
+    completions
     generates shell completions for $CLI_NAME
 
-Examples:
-  $CLI_NAME --generate-desktop-entry
-  $CLI_NAME completions --fish 
-" "$CLI_NAME"
-  exit "$1"
-}
+    Examples:
+    $CLI_NAME --generate-desktop-entry
+    $CLI_NAME completions --fish 
+    " "$CLI_NAME"
+    exit "$1"
+  }
 
 # load config and default vars
 load_config
@@ -1728,175 +1765,175 @@ CURRENT_TIME=$(date +%s)
 
 while [ $# -gt 0 ]; do
   case "$1" in
-  -h | --help)
-    usage 0
-    ;;
-  -v | --version)
-    echo "$CLI_NAME v$CLI_VERSION Copyright © 2024 $CLI_AUTHOR projects"
-    exit 0
-    ;;
-  -e | --edit-config)
-    if command -v "$EDITOR" >/dev/null 2>&1; then
-      $EDITOR "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
-    elif command -v "$PREFERRED_EDITOR" >/dev/null 2>&1; then
-      open "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
-    elif command -v "open" >/dev/null 2>&1; then
-      open "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
-    elif command -v "xdg-open" >/dev/null 2>&1; then
-      xdg-open "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
-    else
-      send_notification "Could not find editor env ($EDITOR) or xdg-open or open" && exit 1
-    fi
-
-    byebye
-    ;;
-  -U | --update)
-    check_update "A new version of $CLI_NAME has been found would you like to upgrade(y/n)"
-    exit 0
-    ;;
-  -S | --search)
-    CMD_ACTION="Search"
-    CMD_SEARCH_TERMS="$2"
-    shift
-    ;;
-  -s | --preferred-selector)
-    [ -n "$2" ] || usage 1
-    PREFERRED_SELECTOR="$2"
-    shift
-    ;;
-  --preview)
-    ENABLE_PREVIEW="true"
-    ;;
-  --no-preview)
-    ENABLE_PREVIEW="false"
-    ;;
-  --disown-streaming-process)
-    DISOWN_STREAMING_PROCESS="true"
-    ;;
-  --no-disown-streaming-process)
-    DISOWN_STREAMING_PROCESS="false"
-    ;;
-  --disown-downloading-process)
-    DISOWN_DOWNLOADING_PROCESS="true"
-    ;;
-  --no-disown-downloading-process)
-    DISOWN_DOWNLOADING_PROCESS="false"
-    ;;
-  --rofi-theme)
-    [ -n "$2" ] || usage 1
-    ROFI_THEME="$2"
-    shift
-    ;;
-  -p | --player)
-    [ -n "$2" ] || usage 1
-    PLAYER="$2"
-    shift
-    ;;
-  -E | --generate-desktop-entry)
-    echo "
-[Desktop Entry]
-Name=$CLI_NAME
-Type=Application
-version=$CLI_VERSION
-Path=$HOME
-Comment=Browse Youtube from the terminal
-Terminal=false
-Icon=$CLI_DIR/assets/logo.png
-Exec=$0 --preferred-selector rofi
-Categories=Education
-    "
-    exit 0
-    ;;
-  completions)
-    [ -n "$2" ] || usage 1
-    case "$2" in
-    -f | --fish)
-      echo "\
-# --- completions ---
-complete -c $CLI_NAME --no-files --arguments \"completions\" --condition 'not __fish_contains_opt sort-by S e edit-config s preferred-selector  E generate-desktop-entry rofi-theme'
-
-complete -c $CLI_NAME --no-files --short-option h --long-option help --description 'Print a short help text and exit'
-complete -c $CLI_NAME --no-files --short-option v --long-option version --description 'Print a short version string and exit' --condition 'not __fish_seen_subcommand_from completions'
-
-complete -c $CLI_NAME --no-files --short-option e --long-option edit-config --description 'Edit $CLI_NAME config file' --condition 'not __fish_seen_subcommand_from completions'
-complete -c $CLI_NAME --no-files --short-option U --long-option update --description 'update the script' --condition 'not __fish_seen_subcommand_from completions'
-complete -c $CLI_NAME --no-files --short-option p --long-option player --description 'the video player to use' --condition 'not __fish_seen_subcommand_from completions' --exclusive --arguments 'mpv vlc'
-complete -c $CLI_NAME --no-files --short-option x --long-option extension --description 'The extension to use' --condition 'not __fish_seen_subcommand_from completions' --exclusive --arguments \"(command ls $CLI_EXTENSION_DIR)\"
-complete -c $CLI_NAME --no-files --short-option s --long-option preferred-selector --description 'your preferred selector' --condition 'not __fish_seen_subcommand_from completions' --exclusive --arguments 'fzf rofi'
-complete -c $CLI_NAME --no-files --short-option E --long-option generate-desktop-entry --description 'generate desktop entry info' --condition 'not __fish_seen_subcommand_from completions' 
-
-complete -c $CLI_NAME --no-files --long-option preview --description 'enable preview window' --condition 'not __fish_seen_subcommand_from completions' 
-complete -c $CLI_NAME --no-files --long-option no-preview --description 'disable preview window' --condition 'not __fish_seen_subcommand_from completions' 
-
-complete -c $CLI_NAME --force-files --long-option rofi-theme --description 'the path to your rofi config file' --condition 'not __fish_seen_subcommand_from completions' 
-
-complete -c $CLI_NAME --no-files --short-option S --long-option search --description 'the terms you want to search' --condition 'not __fish_seen_subcommand_from completions' 
-
-complete -c $CLI_NAME --no-files --short-option z --long-option zsh --description 'print zsh completions' --condition '__fish_seen_subcommand_from completions'
-complete -c $CLI_NAME --no-files --short-option b --long-option bash --description 'print bash completions' --condition '__fish_seen_subcommand_from completions'
-complete -c $CLI_NAME --no-files --short-option f --long-option fish --description 'print fish completions' --condition '__fish_seen_subcommand_from completions'
-    "
-      ;;
-    -b | --bash)
-      # TODO: write bash completions
-      echo Contribute to $CLI_NAME by writing bash completions
-      ;;
-    -z | --zsh)
-      # TODO: write zsh completions
-      echo Contribute to $CLI_NAME by writing zsh completions
-      ;;
     -h | --help)
-      echo "\
-Generate shell completions for $CLI_NAME
-
-Options:
-  --fish
-    print fish completions and exit
-  --bash
-    print bash completions and exit
-  --zsh
-    print zsh completions and exit
-
-Example:
-  $CLI_NAME completions --fish
-  $CLI_NAME completions --bash
-  $CLI_NAME completions --zsh
-    "
+      usage 0
       ;;
-    *)
-      echo "\
-Generate shell completions for $CLI_NAME
-
-Options:
-  --fish
-    print fish completions and exit
-  --bash
-    print bash completions and exit
-  --zsh
-    print zsh completions and exit
-
-Example:
-  $CLI_NAME completions --fish
-  $CLI_NAME completions --bash
-  $CLI_NAME completions --zsh
-    "
-      exit 1
+    -v | --version)
+      echo "$CLI_NAME v$CLI_VERSION Copyright © 2024 $CLI_AUTHOR projects"
+      exit 0
       ;;
+    -e | --edit-config)
+      if command -v "$EDITOR" >/dev/null 2>&1; then
+        $EDITOR "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
+      elif command -v "$PREFERRED_EDITOR" >/dev/null 2>&1; then
+        open "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
+      elif command -v "open" >/dev/null 2>&1; then
+        open "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
+      elif command -v "xdg-open" >/dev/null 2>&1; then
+        xdg-open "$CLI_CONFIG_DIR/${CLI_NAME}.conf"
+      else
+        send_notification "Could not find editor env ($EDITOR) or xdg-open or open" && exit 1
+      fi
 
-    esac
-    exit 0
-    ;;
-  -x | --extension)
-    [ -n "$2" ] || usage 1
-    . "$CLI_EXTENSION_DIR/$2"
-    shift
-    ;;
-  *)
-    usage 1
-    ;;
-  esac
-  shift
-done
+      byebye
+      ;;
+    -U | --update)
+      check_update "A new version of $CLI_NAME has been found would you like to upgrade(y/n)"
+      exit 0
+      ;;
+    -S | --search)
+      CMD_ACTION="Search"
+      CMD_SEARCH_TERMS="$2"
+      shift
+      ;;
+    -s | --preferred-selector)
+      [ -n "$2" ] || usage 1
+      PREFERRED_SELECTOR="$2"
+      shift
+      ;;
+    --preview)
+      ENABLE_PREVIEW="true"
+      ;;
+    --no-preview)
+      ENABLE_PREVIEW="false"
+      ;;
+    --disown-streaming-process)
+      DISOWN_STREAMING_PROCESS="true"
+      ;;
+    --no-disown-streaming-process)
+      DISOWN_STREAMING_PROCESS="false"
+      ;;
+    --disown-downloading-process)
+      DISOWN_DOWNLOADING_PROCESS="true"
+      ;;
+    --no-disown-downloading-process)
+      DISOWN_DOWNLOADING_PROCESS="false"
+      ;;
+    --rofi-theme)
+      [ -n "$2" ] || usage 1
+      ROFI_THEME="$2"
+      shift
+      ;;
+    -p | --player)
+      [ -n "$2" ] || usage 1
+      PLAYER="$2"
+      shift
+      ;;
+    -E | --generate-desktop-entry)
+      echo "
+      [Desktop Entry]
+      Name=$CLI_NAME
+      Type=Application
+      version=$CLI_VERSION
+      Path=$HOME
+      Comment=Browse Youtube from the terminal
+      Terminal=false
+      Icon=$CLI_DIR/assets/logo.png
+      Exec=$0 --preferred-selector rofi
+      Categories=Education
+      "
+      exit 0
+      ;;
+    completions)
+      [ -n "$2" ] || usage 1
+      case "$2" in
+        -f | --fish)
+          echo "\
+            # --- completions ---
+                      complete -c $CLI_NAME --no-files --arguments \"completions\" --condition 'not __fish_contains_opt sort-by S e edit-config s preferred-selector  E generate-desktop-entry rofi-theme'
+
+                      complete -c $CLI_NAME --no-files --short-option h --long-option help --description 'Print a short help text and exit'
+                      complete -c $CLI_NAME --no-files --short-option v --long-option version --description 'Print a short version string and exit' --condition 'not __fish_seen_subcommand_from completions'
+
+                      complete -c $CLI_NAME --no-files --short-option e --long-option edit-config --description 'Edit $CLI_NAME config file' --condition 'not __fish_seen_subcommand_from completions'
+                      complete -c $CLI_NAME --no-files --short-option U --long-option update --description 'update the script' --condition 'not __fish_seen_subcommand_from completions'
+                      complete -c $CLI_NAME --no-files --short-option p --long-option player --description 'the video player to use' --condition 'not __fish_seen_subcommand_from completions' --exclusive --arguments 'mpv vlc'
+                      complete -c $CLI_NAME --no-files --short-option x --long-option extension --description 'The extension to use' --condition 'not __fish_seen_subcommand_from completions' --exclusive --arguments \"(command ls $CLI_EXTENSION_DIR)\"
+                      complete -c $CLI_NAME --no-files --short-option s --long-option preferred-selector --description 'your preferred selector' --condition 'not __fish_seen_subcommand_from completions' --exclusive --arguments 'fzf rofi'
+                      complete -c $CLI_NAME --no-files --short-option E --long-option generate-desktop-entry --description 'generate desktop entry info' --condition 'not __fish_seen_subcommand_from completions' 
+
+                      complete -c $CLI_NAME --no-files --long-option preview --description 'enable preview window' --condition 'not __fish_seen_subcommand_from completions' 
+                      complete -c $CLI_NAME --no-files --long-option no-preview --description 'disable preview window' --condition 'not __fish_seen_subcommand_from completions' 
+
+                      complete -c $CLI_NAME --force-files --long-option rofi-theme --description 'the path to your rofi config file' --condition 'not __fish_seen_subcommand_from completions' 
+
+                      complete -c $CLI_NAME --no-files --short-option S --long-option search --description 'the terms you want to search' --condition 'not __fish_seen_subcommand_from completions' 
+
+                      complete -c $CLI_NAME --no-files --short-option z --long-option zsh --description 'print zsh completions' --condition '__fish_seen_subcommand_from completions'
+                      complete -c $CLI_NAME --no-files --short-option b --long-option bash --description 'print bash completions' --condition '__fish_seen_subcommand_from completions'
+                      complete -c $CLI_NAME --no-files --short-option f --long-option fish --description 'print fish completions' --condition '__fish_seen_subcommand_from completions'
+                      "
+                      ;;
+                    -b | --bash)
+                      # TODO: write bash completions
+                      echo Contribute to $CLI_NAME by writing bash completions
+                      ;;
+                    -z | --zsh)
+                      # TODO: write zsh completions
+                      echo Contribute to $CLI_NAME by writing zsh completions
+                      ;;
+                    -h | --help)
+                      echo "\
+                        Generate shell completions for $CLI_NAME
+
+                      Options:
+                      --fish
+                      print fish completions and exit
+                      --bash
+                      print bash completions and exit
+                      --zsh
+                      print zsh completions and exit
+
+                      Example:
+                      $CLI_NAME completions --fish
+                      $CLI_NAME completions --bash
+                      $CLI_NAME completions --zsh
+                      "
+                      ;;
+                    *)
+                      echo "\
+                        Generate shell completions for $CLI_NAME
+
+                      Options:
+                      --fish
+                      print fish completions and exit
+                      --bash
+                      print bash completions and exit
+                      --zsh
+                      print zsh completions and exit
+
+                      Example:
+                      $CLI_NAME completions --fish
+                      $CLI_NAME completions --bash
+                      $CLI_NAME completions --zsh
+                      "
+                      exit 1
+                      ;;
+
+                    esac
+                    exit 0
+                    ;;
+                  -x | --extension)
+                    [ -n "$2" ] || usage 1
+                    . "$CLI_EXTENSION_DIR/$2"
+                    shift
+                    ;;
+                  *)
+                    usage 1
+                    ;;
+                esac
+                shift
+              done
 
 # Check for updates if enabled
 if [ "$UPDATE_CHECK" = "true" ]; then
